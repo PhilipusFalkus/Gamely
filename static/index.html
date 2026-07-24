@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gamely</title>
+    <link rel="icon" href="/gamely/static/favicon.ico">
+    <link rel="stylesheet" href="/gamely/static/style.css">
+</head>
+<body>
+    <div class="topdiv">
+        <h1 class="page-title">Gamely</h1>
+        <button class="back-button" onclick="window.location.href='https://falkly.de';">Back</button>
+    </div>
+
+    <main>
+        <div class="search-section">
+            <div class="search-bar">
+                <input id="title" placeholder="Enter a game title…">
+                <button id="search">Search</button>
+            </div>
+            <p id="status" class="status"></p>
+            <div class="suggestions-placeholder"></div>
+        </div>
+
+        <section id="results" class="results hidden"></section>
+    </main>
+
+    <div class="impressum">
+        <h1 class="impressum-text">
+            <span class="highlight">Contact:</span> philip.falk010@gmail.com
+        </h1>
+    </div>
+    <script src="/gamely/static/main.js"></script>
+</body>
+</html>
