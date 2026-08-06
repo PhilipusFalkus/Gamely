@@ -1,12 +1,3 @@
-"""Minimal FastAPI app for gamely.
-
-One endpoint at /gamely:
-  GET  -> serves the HTML page (which pulls in its CSS and JS from /gamely/static)
-  POST -> calls a helper function and returns JSON
-
-Run with:  uvicorn main:app --reload
-"""
-
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
@@ -36,3 +27,9 @@ def index():
 async def search(payload: SearchRequest):
     """Take a game title and return price data as JSON."""
     return await services.search_game_prices(payload.title)
+
+
+@app.get("/gamely/suggestions")
+async def suggestions(q: str = ""):
+    """Take a partial game title and return matching title suggestions as JSON."""
+    return await services.search_name_suggestions(q)

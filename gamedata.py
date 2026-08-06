@@ -12,6 +12,7 @@ neither gives a reliable anonymous title lookup.
 
 """
 
+import asyncio
 import re
 import httpx
 import truststore
@@ -111,6 +112,11 @@ def _edition_label(full_name: str, base_title: str) -> str:
     return suffix or "Standard Edition"
 
 
+def _normalize_title(title: str) -> str:
+    """Lowercase and strip trademark symbols/edge whitespace for exact-title comparisons."""
+    return re.sub(r"[®™]", "", title).strip().lower()
+
+
 def _title_matches(candidate: str, query: str) -> bool:
     """Check that every word in `query` also appears (whole-word) in `candidate`.
 
@@ -183,10 +189,20 @@ async def get_steam_price(title: str, cc: str = "de", lang: str = "en") -> Store
         search = (await client.get(
             f"{STEAM_API}/storesearch/", params={"term": title, "cc": cc, "l": lang}, timeout=10,
         )).json()
-        if not search.get("items"):
+        # Steam's search falls back to "closest" results (spin-offs, sequels,
+        # ...) instead of an empty list when the exact title isn't sold on
+        # Steam at all -- e.g. "minecraft" returns "Minecraft Dungeons" as its
+        # top hit. Only accept an exact (case/trademark-insensitive) title
+        # match so an unrelated game is never silently shown as the query.
+        match = next(
+            (item for item in search.get("items", [])
+             if item.get("type") == "app" and _normalize_title(item["name"]) == _normalize_title(title)),
+            None,
+        )
+        if match is None:
             return StoreResult(store="steam", query=title, is_game_existing=False, is_available=False)
 
-        appid = search["items"][0]["id"]
+        appid = match["id"]
         details = (await client.get(
             f"{STEAM_API}/appdetails", params={"appids": appid, "cc": cc, "l": lang}, timeout=10,
         )).json()
@@ -306,6 +322,42 @@ def _gog_final_price(product: dict) -> float:
         return 0.0
 
 
+async def _gog_edition_price(
+    client: httpx.AsyncClient, edition: dict, base_title: str, country: str, currency: str,
+) -> Edition | None:
+    """Fetch price/detail info for one GOG edition, or None if it's not sold in this country/currency."""
+    edition_id = edition["id"]
+    product_resp, prices_resp = await asyncio.gather(
+        client.get(f"{GOG_API_URL}/products/{edition_id}", timeout=10),
+        client.get(
+            f"{GOG_API_URL}/products/{edition_id}/prices",
+            params={"countryCode": country, "currency": currency}, timeout=10,
+        ),
+    )
+    product = product_resp.json()
+    price_entries = prices_resp.json().get("_embedded", {}).get("prices", [])
+    if not price_entries:
+        return None  # not sold in this country/currency
+
+    price = price_entries[0]
+    base_cents = int(price["basePrice"].split()[0])
+    final_cents = int(price["finalPrice"].split()[0])
+    price_currency = price["currency"]["code"]
+    edition_title = product.get("title", base_title)
+    on_sale = final_cents < base_cents
+
+    return Edition(
+        edition=edition.get("name") or _edition_label(edition_title, base_title),
+        title=edition_title,
+        store_url=product.get("links", {}).get("product_card"),
+        is_preorder=bool(product.get("is_pre_order")),
+        current_price=_fmt_cents(final_cents, price_currency),
+        on_sale=on_sale,
+        discount_percent=round((base_cents - final_cents) / base_cents * 100) if on_sale else None,
+        original_price=_fmt_cents(base_cents, price_currency) if on_sale else None,
+    )
+
+
 async def get_gog_price(title: str, country: str = "DE", currency: str = "EUR") -> StoreResult:
     """Look up `title` on GOG.com and return price/sale/preorder info per edition."""
     async with httpx.AsyncClient() as client:
@@ -324,35 +376,12 @@ async def get_gog_price(title: str, country: str = "DE", currency: str = "EUR") 
         base_title = base["title"]
         editions = base.get("editions") or [{"id": base["id"], "name": "Standard Edition"}]
 
-        results = []
-        for edition in editions:
-            edition_id = edition["id"]
-            product = (await client.get(f"{GOG_API_URL}/products/{edition_id}", timeout=10)).json()
-            prices = (await client.get(
-                f"{GOG_API_URL}/products/{edition_id}/prices",
-                params={"countryCode": country, "currency": currency}, timeout=10,
-            )).json()
-            price_entries = prices.get("_embedded", {}).get("prices", [])
-            if not price_entries:
-                continue  # not sold in this country/currency
-
-            price = price_entries[0]
-            base_cents = int(price["basePrice"].split()[0])
-            final_cents = int(price["finalPrice"].split()[0])
-            price_currency = price["currency"]["code"]
-            edition_title = product.get("title", base_title)
-            on_sale = final_cents < base_cents
-
-            results.append(Edition(
-                edition=edition.get("name") or _edition_label(edition_title, base_title),
-                title=edition_title,
-                store_url=product.get("links", {}).get("product_card"),
-                is_preorder=bool(product.get("is_pre_order")),
-                current_price=_fmt_cents(final_cents, price_currency),
-                on_sale=on_sale,
-                discount_percent=round((base_cents - final_cents) / base_cents * 100) if on_sale else None,
-                original_price=_fmt_cents(base_cents, price_currency) if on_sale else None,
-            ))
+        # Editions are independent lookups (each its own product+prices call
+        # pair), so fetch them all concurrently instead of one after another.
+        edition_results = await asyncio.gather(
+            *(_gog_edition_price(client, edition, base_title, country, currency) for edition in editions)
+        )
+        results = [e for e in edition_results if e is not None]
 
         return StoreResult(store="gog", query=title, is_game_existing=True, is_available=bool(results), editions=results)
 

@@ -11,6 +11,7 @@ const STORE_NAMES = {
 const titleInput = document.getElementById("title");
 const statusText = document.getElementById("status");
 const resultsSection = document.getElementById("results");
+const suggestionsBox = document.querySelector(".suggestions-placeholder");
 // Some stores name the base game's edition differently (e.g. GOG calls it
 // "Base Edition" instead of "Standard Edition"). Map known synonyms to one
 // canonical label so cheapest-price comparison groups them together.
@@ -143,6 +144,67 @@ function renderResults(results) {
     }
     resultsSection.classList.remove("hidden");
 }
+// How long to wait after the user stops typing before asking the backend
+// for suggestions, so we don't fire a request on every keystroke.
+const SUGGESTIONS_DEBOUNCE_MS = 200;
+let suggestionsDebounceTimer;
+// Discards a suggestions response that arrives after a newer request was
+// already sent (e.g. slow network + fast typing).
+let suggestionsRequestId = 0;
+function clearSuggestions() {
+    // Cancel any pending/in-flight suggestions fetch too, so a response that
+    // was already on its way can't repopulate the dropdown after it's closed.
+    window.clearTimeout(suggestionsDebounceTimer);
+    suggestionsRequestId++;
+    suggestionsBox.innerHTML = "";
+}
+function selectSuggestion(title) {
+    titleInput.value = title;
+    clearSuggestions();
+    runSearch();
+}
+function renderSuggestions(titles) {
+    suggestionsBox.innerHTML = "";
+    if (titles.length === 0)
+        return;
+    const list = document.createElement("ul");
+    list.className = "suggestions-list";
+    for (const title of titles) {
+        const item = document.createElement("li");
+        item.className = "suggestion-item";
+        item.textContent = title;
+        item.addEventListener("mousedown", (event) => {
+            // mousedown (not click) fires before the input's blur event,
+            // so the suggestion is still in the DOM when this handler runs.
+            event.preventDefault();
+            selectSuggestion(title);
+        });
+        list.appendChild(item);
+    }
+    suggestionsBox.appendChild(list);
+}
+async function fetchSuggestions(text) {
+    const requestId = ++suggestionsRequestId;
+    try {
+        const response = await fetch(`/gamely/suggestions?q=${encodeURIComponent(text)}`);
+        const titles = await response.json();
+        if (requestId === suggestionsRequestId) {
+            renderSuggestions(titles);
+        }
+    }
+    catch (err) {
+        // Suggestions are a nice-to-have; silently ignore a failed lookup.
+    }
+}
+function onTitleInput() {
+    const text = titleInput.value.trim();
+    window.clearTimeout(suggestionsDebounceTimer);
+    if (!text) {
+        clearSuggestions();
+        return;
+    }
+    suggestionsDebounceTimer = window.setTimeout(() => fetchSuggestions(text), SUGGESTIONS_DEBOUNCE_MS);
+}
 async function runSearch() {
     const title = titleInput.value.trim();
     if (!title) {
@@ -151,6 +213,7 @@ async function runSearch() {
     }
     statusText.textContent = "Searching…";
     resultsSection.classList.add("hidden");
+    clearSuggestions();
     try {
         const response = await fetch("/gamely", {
             method: "POST",
@@ -169,5 +232,15 @@ document.getElementById("search").addEventListener("click", runSearch);
 titleInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
         runSearch();
+    }
+    else if (event.key === "Escape") {
+        clearSuggestions();
+    }
+});
+titleInput.addEventListener("input", onTitleInput);
+titleInput.addEventListener("blur", clearSuggestions);
+document.addEventListener("click", (event) => {
+    if (!suggestionsBox.contains(event.target)) {
+        clearSuggestions();
     }
 });
